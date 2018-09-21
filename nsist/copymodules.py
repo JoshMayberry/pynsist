@@ -44,12 +44,18 @@ def check_ext_mod(path, target_python):
         # to a stable ABI. Can we detect this?
         raise ExtensionModuleMismatch(extensionmod_errmsg % ('Python '+target_python, path))
 
-def check_package_for_ext_mods(path, target_python):
+def check_package_for_ext_mods(path, target_python, ignore=None):
     """Walk the directory path, calling :func:`check_ext_mod` on each file.
     """
+    ignore = ignore or []
     for dirpath, dirnames, filenames in os.walk(path):
+        formattedPath = os.path.abspath(os.path.realpath(os.path.join(path, dirpath)))
+        if (ignore):
+            if (any(os.path.commonpath([item]) == os.path.commonpath([item, formattedPath]) for item in ignore)):
+                continue
+
         for filename in filenames:
-            check_ext_mod(os.path.join(path, dirpath, filename), target_python)
+            check_ext_mod(os.path.join(formattedPath, filename), target_python)
 
 def copy_zipmodule(loader, modname, target):
     """Copy a module or package out of a zip file to the target directory."""
@@ -106,7 +112,7 @@ class ModuleCopier:
         self.py_version = py_version
         self.path = path if (path is not None) else ([''] + sys.path)
 
-    def copy(self, modname, target, exclude, packages_extraPath = {}):
+    def copy(self, modname, target, exclude, packages_extraPath=None, packages_ignorePath=None):
         """Copy the importable module 'modname' to the directory 'target'.
 
         modname should be a top-level import, i.e. without any dots.
@@ -116,6 +122,9 @@ class ModuleCopier:
         and extract modules and packages from appropriately structured zip
         files.
         """
+        packages_extraPath = packages_extraPath or {}
+        packages_ignorePath = packages_ignorePath or {}
+
         spec = importlib.machinery.PathFinder.find_spec(modname, self.path)
         if spec is None:
             raise ImportError('Could not find %r' % modname)
@@ -134,7 +143,7 @@ class ModuleCopier:
             if pkg:
                 pkgdir, basename = os.path.split(file)
                 assert basename.startswith('__init__')
-                check_package_for_ext_mods(pkgdir, self.py_version)
+                check_package_for_ext_mods(pkgdir, self.py_version, ignore = packages_ignorePath.get(modname, None))
 
                 for key, value in packages_extraPath.items():
                     if (os.path.samefile(key, pkgdir)):
@@ -162,7 +171,7 @@ class ModuleCopier:
             copy_zipmodule(loader, modname, target)
 
 
-def copy_modules(modnames, target, py_version, path=None, exclude=None, packages_extraPath={}):
+def copy_modules(modnames, target, py_version, path=None, exclude=None, packages_extraPath=None, packages_ignorePath=None):
     """Copy the specified importable modules to the target directory.
 
     By default, it finds modules in :data:`sys.path` - this can be overridden
@@ -171,11 +180,17 @@ def copy_modules(modnames, target, py_version, path=None, exclude=None, packages
     mc = ModuleCopier(py_version, path)
     files_in_target_noext = [os.path.splitext(f)[0] for f in os.listdir(target)]
 
+    # Format ignore path
+    if (packages_ignorePath):
+        packages_ignorePath = {key: {os.path.abspath(os.path.realpath(item)) for item in value} for key, value in packages_ignorePath.items()}
+    else:
+        packages_ignorePath = {}
+
     for modname in modnames:
         if modname in files_in_target_noext:
             # Already there, no need to copy it.
             continue
-        mc.copy(modname, target, exclude, packages_extraPath = packages_extraPath)
+        mc.copy(modname, target, exclude, packages_extraPath = packages_extraPath, packages_ignorePath = packages_ignorePath)
 
     if not modnames:
         # NSIS abhors an empty folder, so give it a file to find.
